@@ -1,0 +1,15 @@
+# Kafka Configuration
+kafka:
+  bootstrap-servers: kafka:9092
+  topics:
+    page-views: page_views_test
+    ad-clicks: ad_clicks_test
+  consumer:
+    group-id: stream-processor-group_test
+
+watermark:
+  allowed-lateness-minutes: 15
+
+output:
+  database:
+    path: ./output/attributed_page_views_test.db
