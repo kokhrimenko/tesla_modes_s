@@ -2,10 +2,12 @@ package com.kokhrimenko.tesla.model_s.engine;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.Queue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -17,6 +19,7 @@ import com.kokhrimenko.tesla.model_s.state.ClickStateStore;
 import com.kokhrimenko.tesla.model_s.state.PageViewStore;
 import com.kokhrimenko.tesla.model_s.state.WatermarkTracker;
 
+import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
@@ -43,6 +46,20 @@ public class JoinEngine {
     
     private final AtomicReference<Instant> globalMaxEventTime = new AtomicReference<>(Instant.MIN);
 
+    @Value("${kafka.consumer.concurrency:1}")
+    private int concurrency;
+
+    private Object[] partitionLocks;
+    
+    @PostConstruct
+    public void init() {
+    	partitionLocks = new Object[concurrency];
+
+        for (int i = 0; i < concurrency; i++) {
+            partitionLocks[i] = new Object();
+        }
+    }
+
     /**
      * Process an ad click event.
      * Store the click in state for future attribution.
@@ -50,20 +67,23 @@ public class JoinEngine {
      * @param click the ad click event
      */
     public void processClick(AdClickEvent click) {
+    	final var partition = click.getPartition();
         log.debug("Processing click: {}", click.getClickId());
 
-        if (watermarkTracker.isTooLate(click.getPartition(), click.getEventTime())) {
-            log.warn("Dropped late ad click: {}", click.getClickId());
-            //ToDo: introduce dead queue here
-            return;
+        synchronized (partitionLocks[partition]) {
+	        if (watermarkTracker.isTooLate(partition, click.getEventTime())) {
+	            log.warn("Dropped late ad click: {}", click.getClickId());
+	            //ToDo: introduce dead queue here
+	            return;
+	        }
+	
+	        watermarkTracker.updateWatermark(partition, click.getEventTime());
+	        updateGlobalMaxEventTime(click.getEventTime());
+	
+	        clickStore.addClick(click);
+	
+	        evaluatePendingPageViews(partition);
         }
-
-        watermarkTracker.updateWatermark(click.getPartition(), click.getEventTime());
-        updateGlobalMaxEventTime(click.getEventTime());
-
-        clickStore.addClick(click);
-
-        evaluatePendingPageViews(click.getPartition());
     }
 
 	private void updateGlobalMaxEventTime(Instant eventTime) {
@@ -82,17 +102,14 @@ public class JoinEngine {
 
         Instant safeTime = watermarkTracker.getWatermark(partition).minus(watermarkTracker.getAllowedLateness());
 
-		synchronized (queue) {
-			while (!queue.isEmpty()) {
-				PageViewEvent oldest = queue.peek();
-				if (oldest == null || oldest.getEventTime().equals(safeTime)
-						|| oldest.getEventTime().isAfter(safeTime)) {
-					break;
-				}
-				PageViewEvent readyToEmit = queue.poll();
-				if (readyToEmit != null) {
-					emitAttribution(readyToEmit);
-				}
+		while (!queue.isEmpty()) {
+			PageViewEvent oldest = queue.peek();
+			if (oldest == null || (!oldest.getEventTime().equals(safeTime) && oldest.getEventTime().isAfter(safeTime))) {
+				break;
+			}
+			PageViewEvent readyToEmit = queue.poll();
+			if (readyToEmit != null) {
+				emitAttribution(readyToEmit);
 			}
 		}
     }
@@ -124,20 +141,23 @@ public class JoinEngine {
      * @param pageView the page view event
      */
     public void processPageView(PageViewEvent pageView) {
+    	final var partition = pageView.getPartition();
         log.debug("Processing page view: {}", pageView.getEventId());
 
-        if (watermarkTracker.isTooLate(pageView.getPartition(), pageView.getEventTime())) {
-            log.warn("Dropped late page view: {}", pageView.getEventId());
-            return;
+        synchronized (partitionLocks[partition]) {
+	        if (watermarkTracker.isTooLate(partition, pageView.getEventTime())) {
+	            log.warn("Dropped late page view: {}", pageView.getEventId());
+	            //ToDo: introduce dead queue here
+	            return;
+	        }
+	
+	        watermarkTracker.updateWatermark(partition, pageView.getEventTime());
+	        updateGlobalMaxEventTime(pageView.getEventTime());
+	
+	        pageViewStore.addPageView(pageView);
+
+	        evaluatePendingPageViews(partition);
         }
-
-        watermarkTracker.updateWatermark(pageView.getPartition(), pageView.getEventTime());
-        updateGlobalMaxEventTime(pageView.getEventTime());
-
-        pageViewStore.addPageView(pageView);
-
-        // Check if this new page view (or any existing ones) are ready to be emitted
-        evaluatePendingPageViews(pageView.getPartition());
     }
 
     /**
@@ -163,22 +183,23 @@ public class JoinEngine {
 		}
     }
 
-    @Scheduled(fixedRate = IDLE_TOPICS_TRACKER, timeUnit = TimeUnit.SECONDS)
-    protected void flushIdlePartitions() {
-        Instant now = Instant.now();
-		log.info("Flush indle messages at: {}", now);
-        Duration idleThreshold = watermarkTracker.getAllowedLateness().plusSeconds(IDLE_TOPICS_TRACKER);
+	@Scheduled(fixedRate = IDLE_TOPICS_TRACKER, timeUnit = TimeUnit.SECONDS)
+	protected void flushIdlePartitions() {
+		Duration idleThreshold = watermarkTracker.getAllowedLateness().plusSeconds(IDLE_TOPICS_TRACKER);
 
-        for (Integer partition : pageViewStore.getAllPartitions()) {
-            Instant lastActive = watermarkTracker.getWatermark(partition);
+		for (Integer partition : pageViewStore.getAllPartitions()) {
+			Instant currentWatermark = watermarkTracker.getWatermark(partition);
+			Instant advancedWatermark = currentWatermark.plus(IDLE_TOPICS_TRACKER, ChronoUnit.SECONDS);
 
-            if (Duration.between(lastActive, now).compareTo(idleThreshold) > 0) {
-                log.debug("Partition {} is idle. Forcing watermark advancement.", partition);
-                
-                watermarkTracker.updateWatermark(partition, now);
-                
-                evaluatePendingPageViews(partition); 
-            }
-        }
-    }
+			if (Duration.between(currentWatermark, advancedWatermark).compareTo(idleThreshold) > 0) {
+				synchronized (partitionLocks[partition]) {
+					log.debug("Partition {} is idle. Forcing watermark advancement to {}.", partition, advancedWatermark);
+
+					watermarkTracker.updateWatermark(partition, advancedWatermark);
+
+					evaluatePendingPageViews(partition);
+				}
+			}
+		}
+	}
 }

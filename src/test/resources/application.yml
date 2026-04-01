@@ -7,7 +7,7 @@ output:
 
 logging:
   level:
-    root: DEBUG
+    root: INFO
     com.kokhrimenko.tesla.model_s: DEBUG
     org.springframework.kafka: INFO
     org.apache.kafka: WARN

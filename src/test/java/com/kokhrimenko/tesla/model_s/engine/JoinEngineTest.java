@@ -25,6 +25,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import com.kokhrimenko.tesla.model_s.model.AdClickEvent;
 import com.kokhrimenko.tesla.model_s.model.AttributedPageView;
@@ -56,6 +57,9 @@ class JoinEngineTest {
     void setUp() {
         lenient().when(watermarkTracker.isTooLate(anyInt(), any())).thenReturn(false);
         lenient().when(watermarkTracker.getAllowedLateness()).thenReturn(Duration.ofMinutes(LATENESS_IN_MINS));
+
+        ReflectionTestUtils.setField(joinEngine, "concurrency", 5);
+        joinEngine.init();
     }
 
     @Test

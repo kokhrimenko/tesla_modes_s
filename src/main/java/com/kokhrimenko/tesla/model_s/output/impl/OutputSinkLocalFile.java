@@ -30,20 +30,23 @@ public class OutputSinkLocalFile implements OutputSink {
     private Writer fileWriter;
 
     @PostConstruct
-    public void init() {
-        try {
-			if (new File(outputFilePath).getParentFile().mkdirs()) {
-				OutputStreamWriter fw = new FileWriter(outputFilePath, true);
-				this.fileWriter = new PrintWriter(new BufferedWriter(fw));
-				log.info("OutputSink initialized. Writing attributed events to: {}", outputFilePath);
-			} else {
-				throw new RuntimeException("Cannot create output sink");
+	public void init() {
+		try {
+			final var outputFile = new File(outputFilePath);
+
+			if (!outputFile.getParentFile().exists()) {
+				if (!outputFile.getParentFile().mkdir()) {
+					throw new RuntimeException("Cannot create output sink directory");
+				}
 			}
-        } catch (IOException e) {
-            log.error("Failed to initialize file writer for path: {}", outputFilePath, e);
-            throw new RuntimeException("Could not initialize OutputSink", e);
-        }
-    }
+			OutputStreamWriter fw = new FileWriter(outputFile, true);
+			this.fileWriter = new PrintWriter(new BufferedWriter(fw));
+			log.info("OutputSink initialized. Writing attributed events to: {}", outputFilePath);
+		} catch (IOException e) {
+			log.error("Failed to initialize file writer for path: {}", outputFilePath, e);
+			throw new RuntimeException("Could not initialize OutputSink", e);
+		}
+	}
     
 	@Override
 	public void write(AttributedPageView record) {

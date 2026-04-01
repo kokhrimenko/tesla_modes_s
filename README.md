@@ -27,4 +27,6 @@ To build the application run: `mvn clean install`. It will include building the 
 ## Edge cases comments
 1 App provide `At least once` delivery guarantee, meaning some duplications possible. Consumer should be `idempotent`.  
 2 Right now old events just dropped, no `Dead letter` queue in place  
-3 To prevent evens lost, in case of app crashes, persistency layer (**Redis**) added. Used **AI** to generate some Radis code.
+3 To prevent evens lost, in case of app crashes, persistency layer (**Redis**) added. Used **AI** to generate some Radis code.  
+4 ** It's important: ** via email we've agreed that produceds already configured in a way that all all messages for the same userId always landing to the same partition (userId like a message key).  
+5 ** It's important ** based in the requirements I renamed all of the packages so ** company ** mentioning accross the repository.  
