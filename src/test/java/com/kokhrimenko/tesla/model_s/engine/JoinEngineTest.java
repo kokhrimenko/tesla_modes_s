@@ -14,6 +14,8 @@ import static org.mockito.Mockito.when;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayDeque;
+import java.util.List;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -29,15 +31,19 @@ import com.kokhrimenko.tesla.model_s.model.AttributedPageView;
 import com.kokhrimenko.tesla.model_s.model.PageViewEvent;
 import com.kokhrimenko.tesla.model_s.output.OutputSink;
 import com.kokhrimenko.tesla.model_s.state.impl.InMemoryClickStateStore;
+import com.kokhrimenko.tesla.model_s.state.impl.InMemoryPageViewStore;
 import com.kokhrimenko.tesla.model_s.state.impl.InMemoryWatermarkTracker;
 
 @ExtendWith(MockitoExtension.class)
 class JoinEngineTest {
+	private static final int LATENESS_IN_MINS = 15;
 
 	@Mock
 	private InMemoryClickStateStore clickStore;
     @Mock
     private InMemoryWatermarkTracker watermarkTracker;
+    @Mock
+    private InMemoryPageViewStore pageViewStore;
     @Mock
     private OutputSink outputSink;
 
@@ -49,7 +55,7 @@ class JoinEngineTest {
     @BeforeEach
     void setUp() {
         lenient().when(watermarkTracker.isTooLate(anyInt(), any())).thenReturn(false);
-        lenient().when(watermarkTracker.getAllowedLateness()).thenReturn(Duration.ofMinutes(15));
+        lenient().when(watermarkTracker.getAllowedLateness()).thenReturn(Duration.ofMinutes(LATENESS_IN_MINS));
     }
 
     @Test
@@ -60,12 +66,15 @@ class JoinEngineTest {
     	final var pageView1 = "page_view_1";
     	final var campaign1 = "campaign_1";
 
-        AdClickEvent click = createClick(campaign1, userId, baseTime.minus(10, ChronoUnit.SECONDS), campaign1, partition);
+		AdClickEvent click = createClick(campaign1, userId,
+				baseTime.minus(LATENESS_IN_MINS + 3, ChronoUnit.MINUTES), campaign1, partition);
         when(watermarkTracker.getWatermark(partition)).thenReturn(baseTime);
         
         joinEngine.processClick(click);
         
-        PageViewEvent pageViewEvent = createPageView(pageView1, userId, baseTime.plusSeconds(59), partition);
+		PageViewEvent pageViewEvent = createPageView(pageView1, userId,
+				baseTime.minus(LATENESS_IN_MINS + 1, ChronoUnit.MINUTES), partition);
+		when(pageViewStore.getByPartition(partition)).thenReturn(new ArrayDeque<>(List.of(pageViewEvent)));
         when(watermarkTracker.getWatermark(partition)).thenReturn(baseTime.plusSeconds(60));
         when(clickStore.findAttributableClick(userId, pageViewEvent.getEventTime())).thenReturn(click);
 
@@ -84,22 +93,26 @@ class JoinEngineTest {
     	final var campaign1 = "campaign_1";
     	final var clickId1 = "click_1";
     	final var clickId2 = "click_2";
+    	final int allowedLateness = 5;
 
-        PageViewEvent pv = createPageView("pv1", userId1, baseTime.plus(Duration.ofMinutes(5)), partition);
+    	when(watermarkTracker.getAllowedLateness()).thenReturn(Duration.ofSeconds(allowedLateness));
+    	
+        PageViewEvent pageViewEvent = createPageView("pv1", userId1, baseTime.plus(Duration.ofSeconds(1)), partition);
+        when(pageViewStore.getByPartition(partition)).thenReturn(new ArrayDeque<>(List.of(pageViewEvent)));
         when(watermarkTracker.getWatermark(partition)).thenReturn(baseTime);
+        joinEngine.processPageView(pageViewEvent);
         
-        joinEngine.processPageView(pv);
         //page view came after watermark, no output
         verify(outputSink, never()).write(any());
 
-        AdClickEvent click = createClick(clickId1, userId1, baseTime.plus(Duration.ofMinutes(2)), campaign1, partition);
+        AdClickEvent click = createClick(clickId1, userId1, baseTime.plus(Duration.ofSeconds(2)), campaign1, partition);
         joinEngine.processClick(click);
         verify(clickStore).addClick(click);
 
-        when(watermarkTracker.getWatermark(partition)).thenReturn(baseTime.plus(Duration.ofMinutes(6)));
+        when(watermarkTracker.getWatermark(partition)).thenReturn(baseTime.plus(Duration.ofSeconds(allowedLateness + 2)));
         when(clickStore.findAttributableClick(eq(userId1), any())).thenReturn(click);
 
-        joinEngine.processClick(createClick(clickId2, "user_2", baseTime.plus(Duration.ofMinutes(6)), campaign1, partition));
+        joinEngine.processClick(createClick(clickId2, "user_2", baseTime, campaign1, partition));
 
         ArgumentCaptor<AttributedPageView> captor = ArgumentCaptor.forClass(AttributedPageView.class);
         verify(outputSink).write(captor.capture());
@@ -111,10 +124,10 @@ class JoinEngineTest {
     void testLateDataDropping() {
     	final var partition = 0;
 
-        PageViewEvent latePv = createPageView("pv_late", "user_1", baseTime, partition);
-        when(watermarkTracker.isTooLate(partition, latePv.getEventTime())).thenReturn(true);
+        PageViewEvent latePageViewEvent = createPageView("pv_late", "user_1", baseTime, partition);
+        when(watermarkTracker.isTooLate(partition, latePageViewEvent.getEventTime())).thenReturn(true);
 
-        joinEngine.processPageView(latePv);
+        joinEngine.processPageView(latePageViewEvent);
 
         verify(outputSink, never()).write(any());
         verify(clickStore, never()).addClick(any());
@@ -127,11 +140,11 @@ class JoinEngineTest {
     	final var userId1 = "user_1";
     	final var pageView1 = "pv1";
 
-        PageViewEvent pv = createPageView(pageView1, userId1, baseTime.minus(10, ChronoUnit.SECONDS), partition);
+        PageViewEvent pageViewEvent = createPageView(pageView1, userId1, baseTime.minus(LATENESS_IN_MINS + 1, ChronoUnit.MINUTES), partition);
         when(watermarkTracker.getWatermark(partition)).thenReturn(baseTime);
         when(clickStore.findAttributableClick(any(), any())).thenReturn(null);
-
-        joinEngine.processPageView(pv);
+		when(pageViewStore.getByPartition(partition)).thenReturn(new ArrayDeque<>(List.of(pageViewEvent)));
+        joinEngine.processPageView(pageViewEvent);
 
         ArgumentCaptor<AttributedPageView> captor = ArgumentCaptor.forClass(AttributedPageView.class);
         verify(outputSink).write(captor.capture());

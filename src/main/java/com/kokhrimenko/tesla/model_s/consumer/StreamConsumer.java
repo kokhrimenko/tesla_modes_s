@@ -37,7 +37,8 @@ public class StreamConsumer {
     @KafkaListener(
         topics = "${kafka.topics.ad-clicks:ad_clicks}",
         groupId = "${kafka.consumer.group-id:stream-processor-group}",
-        containerFactory = "adClickListenerContainerFactory"
+        containerFactory = "adClickListenerContainerFactory",
+        concurrency = "${kafka.consumer.concurrency:3}"
     )
     public void consumeAdClick(ConsumerRecord<String, String> record, Acknowledgment acknowledgment) {
         try {
@@ -51,8 +52,8 @@ public class StreamConsumer {
 
             acknowledgment.acknowledge();
 
-            log.debug("Successfully processed ad click from partition {} offset {}",
-                record.partition(), record.offset());
+			log.debug("Successfully processed ad click from partition {} offset {}, eventTime {}", record.partition(),
+					record.offset(), click.getEventTime());
 
         } catch (Exception e) {
 			log.error("Error processing ad click from partition {} offset {}: {}", record.partition(), record.offset(),
@@ -71,7 +72,8 @@ public class StreamConsumer {
     @KafkaListener(
         topics = "${kafka.topics.page-views:page_views}",
         groupId = "${kafka.consumer.group-id:stream-processor-group}",
-        containerFactory = "pageViewListenerContainerFactory"
+        containerFactory = "pageViewListenerContainerFactory",
+        concurrency = "${kafka.consumer.concurrency:3}"
     )
     public void consumePageView(ConsumerRecord<String, String> record, Acknowledgment acknowledgment) {
         try {
@@ -85,8 +87,8 @@ public class StreamConsumer {
 
             acknowledgment.acknowledge();
 
-			log.debug("Successfully processed page view from partition {} offset {}", record.partition(),
-					record.offset());
+			log.debug("Successfully processed page view from partition {} offset {}, eventTile {}", record.partition(),
+					record.offset(), pageView.getEventTime());
 
         } catch (Exception e) {
 			log.error("Error processing page view from partition {} offset {}: {}", record.partition(), record.offset(),

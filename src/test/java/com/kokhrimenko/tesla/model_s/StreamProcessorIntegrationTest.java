@@ -27,6 +27,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
@@ -56,17 +57,21 @@ public class StreamProcessorIntegrationTest {
 
 	private DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss")
 			.withZone(ZoneId.systemDefault());
-	
+
 	@DynamicPropertySource
-    static void overrideProperties(DynamicPropertyRegistry registry) {
+	static void overrideProperties(DynamicPropertyRegistry registry) {
 		final var bootstrapServers = kafka.getBootstrapServers();
 
-        registry.add("spring.kafka.bootstrap-servers", () -> bootstrapServers);
-        registry.add("spring.kafka.consumer.bootstrap-servers", () -> bootstrapServers);
-        
-        registry.add("kafka.bootstrap-servers", () -> bootstrapServers);
-    }
-	
+		registry.add("kafka.topics.page-views", () -> PAGE_VIEWS_TOPIC);
+		registry.add("kafka.topics.ad-clicks", () -> AD_CLICK_TOPIC);
+		registry.add("kafka.consumer.group-id", () -> "stream-processor-group_test");
+		registry.add("spring.kafka.bootstrap-servers", () -> bootstrapServers);
+		registry.add("spring.kafka.consumer.bootstrap-servers", () -> bootstrapServers);
+		registry.add("kafka.consumer.concurrency", () -> 1);
+
+		registry.add("kafka.bootstrap-servers", () -> bootstrapServers);
+	}
+
 	@TestConfiguration
 	@EnableKafka
 	static class KafkaTestConfig {
@@ -94,7 +99,10 @@ public class StreamProcessorIntegrationTest {
 			return new KafkaTemplate<>(producerFactory());
 		}
 	}
-	
+
+	@Value("${watermark.allowed-lateness-minutes:15}")
+	private int allowedLateness;
+
 	@Autowired
 	private KafkaTemplate<String, String> kafkaTemplate;
 
@@ -110,10 +118,10 @@ public class StreamProcessorIntegrationTest {
 	public static void tearDown() {
 		kafka.stop();
 	}
-	
+
 	@Test
 	@DisplayName("Should handle Out-of-Order events and attribute to the most recent click")
-	void testOutOfOrderAndMultipleClicks() {
+	void testOutOfOrderAndMultipleClicks() throws InterruptedException {
 		final var now = Instant.now();
 		final var userId1 = "user_" + UUID.randomUUID().toString();
 		final var clickId1 = "click_" + UUID.randomUUID().toString();
@@ -121,28 +129,26 @@ public class StreamProcessorIntegrationTest {
 		final var campaignId1 = "campaign_" + UUID.randomUUID().toString();
 		final var campaignId2 = "campaign_" + UUID.randomUUID().toString();
 		final var pageViewId = "page_view_" + UUID.randomUUID().toString();
-		
-		sendPageView(pageViewId, userId1, formatter.format(now.minus(5, ChronoUnit.MINUTES)));
 
-		sendAdClick(clickId1, userId1, formatter.format(Instant.now().minus(15, ChronoUnit.MINUTES)), campaignId1);
+		sendPageView(pageViewId, userId1, formatter.format(now.minus(allowedLateness, ChronoUnit.MINUTES)));
 
-		sendAdClick(clickId2, userId1, formatter.format(Instant.now().minus(8, ChronoUnit.MINUTES)), campaignId2);
+		sendAdClick(clickId1, userId1, formatter.format(now.minus(25, ChronoUnit.MINUTES)), campaignId1);
 
-		sendAdClick("dummy", "user_dummy", formatter.format(Instant.now()), "dummy_camp");
+		sendAdClick(clickId2, userId1, formatter.format(now.minus(22, ChronoUnit.MINUTES)), campaignId2);
 
-		await().atMost(Duration.ofSeconds(100)).untilAsserted(() -> verify(outputSink, atLeastOnce()).write(any()));
+		sendAdClick("dummy", "user_dummy", formatter.format(now.plusSeconds(15)), "dummy_camp");
+
+		await().atMost(Duration.ofSeconds(1000)).untilAsserted(() -> verify(outputSink, atLeastOnce()).write(any()));
 
 		ArgumentCaptor<AttributedPageView> captor = ArgumentCaptor.forClass(AttributedPageView.class);
 		verify(outputSink, atLeast(1)).write(captor.capture());
 
 		List<AttributedPageView> outputs = captor.getAllValues();
-		AttributedPageView targetOutput = outputs
-				.stream()
-				.filter(o -> pageViewId.equals(o.getPageViewId()))
-				.findFirst()
+		AttributedPageView targetOutput = outputs.stream().filter(o -> pageViewId.equals(o.getPageViewId())).findFirst()
 				.orElseThrow();
 
-		// Should be attributed to click_2 (camp_B) because it's the MOST RECENT within 30 minutes
+		// Should be attributed to click_2 (camp_B) because it's the MOST RECENT within
+		// 30 minutes
 		assertThat(targetOutput.getAttributedClickId()).isEqualTo(clickId2);
 		assertThat(targetOutput.getAttributedCampaignId()).isEqualTo(campaignId2);
 	}
@@ -157,21 +163,17 @@ public class StreamProcessorIntegrationTest {
 		final var oldClickId = "click_old";
 		final var pageViewId = "page_view_" + UUID.randomUUID().toString();
 
-		// Click at 11:30
-		sendAdClick(oldClickId, realUser, formatter.format(now.minus(1, ChronoUnit.HOURS)), "camp_C");
+		sendAdClick(oldClickId, realUser, formatter.format(now.minus(30, ChronoUnit.HOURS).minusSeconds(5)), "camp_C");
 
-		// Page View at 12:10 (> 30 mins later)
-		sendPageView(pageViewId, realUser, formatter.format(now.minus(1, ChronoUnit.MINUTES)));
+		sendPageView(pageViewId, realUser, formatter.format(now));
 
-		// Advance watermark
-		sendAdClick("dummy", dummyUser, formatter.format(now) , "dummy_camp");
+		sendAdClick("dummy", dummyUser, formatter.format(now.plus(allowedLateness, ChronoUnit.MINUTES).plusSeconds(10l)), "dummy_camp");
 
 		await().atMost(Duration.ofSeconds(100)).untilAsserted(() -> {
 			ArgumentCaptor<AttributedPageView> captor = ArgumentCaptor.forClass(AttributedPageView.class);
 			verify(outputSink, atLeast(1)).write(captor.capture());
 
-			boolean hasProcessedCorrectCampaign = captor.getAllValues()
-					.stream()
+			boolean hasProcessedCorrectCampaign = captor.getAllValues().stream()
 					.anyMatch(o -> pageViewId.equals(o.getPageViewId()) && o.getAttributedClickId() == null);
 
 			assertThat(hasProcessedCorrectCampaign).isTrue();

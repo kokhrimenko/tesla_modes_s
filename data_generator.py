@@ -41,7 +41,7 @@ def generate_test_data():
     Returns:
         tuple: (page_views, ad_clicks) sorted by processing time
     """
-    base_time = datetime(2026, 3, 28, 12, 0, 0)
+    base_time = datetime(2025, 3, 28, 12, 0, 0)
 
     page_views = []
     ad_clicks = []

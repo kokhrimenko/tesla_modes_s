@@ -3,7 +3,7 @@ package com.kokhrimenko.tesla.model_s.state;
 import java.time.Duration;
 import java.time.Instant;
 
-import org.springframework.stereotype.Component;
+import org.springframework.stereotype.Repository;
 
 /**
  * Tracks watermarks per partition to handle out-of-order events.
@@ -12,7 +12,7 @@ import org.springframework.stereotype.Component;
  * Events arriving with event_time < watermark - allowedLateness are considered too late.
  *
  */
-@Component
+@Repository
 public interface WatermarkTracker {
 
     /**

@@ -11,7 +11,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 
 import org.springframework.context.annotation.Profile;
-import org.springframework.stereotype.Component;
+import org.springframework.stereotype.Repository;
 
 import com.kokhrimenko.tesla.model_s.model.AdClickEvent;
 import com.kokhrimenko.tesla.model_s.state.ClickStateStore;
@@ -19,7 +19,7 @@ import com.kokhrimenko.tesla.model_s.state.ClickStateStore;
 import lombok.extern.slf4j.Slf4j;
 
 @Slf4j
-@Component
+@Repository
 @Profile("!production")
 public class InMemoryClickStateStore implements ClickStateStore {
 
@@ -68,6 +68,7 @@ public class InMemoryClickStateStore implements ClickStateStore {
 
         UserClickState state = store.get(userId);
         if (state == null) {
+        	log.debug("No clicks found for user {}", userId);
             return null;
         }
 
@@ -75,15 +76,11 @@ public class InMemoryClickStateStore implements ClickStateStore {
         
         state.lock.lock();
         try {
-            for (AdClickEvent click : state.clicks) {
-                if (!click.getEventTime().isAfter(pageViewTime)) {
-                    if (!click.getEventTime().isBefore(windowStart)) {
-                        return click;
-                    }
-                    return null;
-                }
-            }
-            return null;
+        	return state.clicks.stream()
+        			.filter(click -> click.getEventTime().isBefore(pageViewTime))
+        	        .filter(click -> click.getEventTime().isAfter(windowStart))
+        			.findFirst()
+        			.orElseGet(() -> null);
         } finally {
             state.lock.unlock();
         }

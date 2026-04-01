@@ -2,9 +2,8 @@ package com.kokhrimenko.tesla.model_s.engine;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.util.Comparator;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.PriorityBlockingQueue;
+import java.util.Queue;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.springframework.scheduling.annotation.Scheduled;
@@ -15,6 +14,7 @@ import com.kokhrimenko.tesla.model_s.model.AttributedPageView;
 import com.kokhrimenko.tesla.model_s.model.PageViewEvent;
 import com.kokhrimenko.tesla.model_s.output.OutputSink;
 import com.kokhrimenko.tesla.model_s.state.ClickStateStore;
+import com.kokhrimenko.tesla.model_s.state.PageViewStore;
 import com.kokhrimenko.tesla.model_s.state.WatermarkTracker;
 
 import lombok.RequiredArgsConstructor;
@@ -33,31 +33,24 @@ import lombok.extern.slf4j.Slf4j;
 @Component
 @RequiredArgsConstructor
 public class JoinEngine {
+	static final int IDLE_TOPICS_TRACKER = 60;
 	private static final Duration ATTRIBUTION_WINDOW = Duration.ofMinutes(30);
 
     private final ClickStateStore clickStore;
     private final WatermarkTracker watermarkTracker;
+    private final PageViewStore pageViewStore;
     private final OutputSink outputSink;
     
     private final AtomicReference<Instant> globalMaxEventTime = new AtomicReference<>(Instant.MIN);
-    private final ConcurrentHashMap<Integer, PriorityBlockingQueue<PageViewEvent>> pendingPageViews = new ConcurrentHashMap<>();
 
     /**
      * Process an ad click event.
      * Store the click in state for future attribution.
      *
-     * TODO: Implement click processing logic
-     * - Check if event is too late using watermarkTracker
-     * - Store the click in clickStore
-     * - Update watermark for the partition
-     *
      * @param click the ad click event
      */
     public void processClick(AdClickEvent click) {
         log.debug("Processing click: {}", click.getClickId());
-
-        watermarkTracker.updateWatermark(click.getPartition(), click.getEventTime());
-        updateGlobalMaxEventTime(click.getEventTime());
 
         if (watermarkTracker.isTooLate(click.getPartition(), click.getEventTime())) {
             log.warn("Dropped late ad click: {}", click.getClickId());
@@ -65,9 +58,11 @@ public class JoinEngine {
             return;
         }
 
+        watermarkTracker.updateWatermark(click.getPartition(), click.getEventTime());
+        updateGlobalMaxEventTime(click.getEventTime());
+
         clickStore.addClick(click);
-        
-        // Advancing the watermark might have unblocked some buffered page views
+
         evaluatePendingPageViews(click.getPartition());
     }
 
@@ -80,31 +75,26 @@ public class JoinEngine {
      * that the watermark has successfully passed.
      */
     private void evaluatePendingPageViews(int partition) {
-        PriorityBlockingQueue<PageViewEvent> queue = pendingPageViews.get(partition);
+        Queue<PageViewEvent> queue = pageViewStore.getByPartition(partition);
         if (queue == null || queue.isEmpty()) {
             return;
         }
 
-        Instant currentWatermark = watermarkTracker.getWatermark(partition);
+        Instant safeTime = watermarkTracker.getWatermark(partition).minus(watermarkTracker.getAllowedLateness());
 
-        // Peek at the oldest page view in the queue. 
-        // If its event time is <= the current watermark, we are confident no more 
-        // non-late clicks will arrive before it. We can safely emit.
-        while (!queue.isEmpty()) {
-            PageViewEvent oldest = queue.peek();
-            
-            // If the oldest event is strictly AFTER the watermark, it's not ready yet.
-            // Because the queue is sorted, none of the newer events are ready either.
-            if (oldest == null || !currentWatermark.isAfter(oldest.getEventTime())) {
-                break;
-            }
-
-            // It is ready! Remove it from the buffer and process it.
-            PageViewEvent readyToEmit = queue.poll();
-            if (readyToEmit != null) {
-                emitAttribution(readyToEmit);
-            }
-        }
+		synchronized (queue) {
+			while (!queue.isEmpty()) {
+				PageViewEvent oldest = queue.peek();
+				if (oldest == null || oldest.getEventTime().equals(safeTime)
+						|| oldest.getEventTime().isAfter(safeTime)) {
+					break;
+				}
+				PageViewEvent readyToEmit = queue.poll();
+				if (readyToEmit != null) {
+					emitAttribution(readyToEmit);
+				}
+			}
+		}
     }
 
     /**
@@ -130,29 +120,21 @@ public class JoinEngine {
      * Process a page view event.
      * Find matching click and emit attributed page view.
      *
-     * TODO: Implement page view processing logic
-     * - Check if event is too late using watermarkTracker
-     * - Find attributable click from clickStore
-     * - Create and emit AttributedPageView
-     * - Update watermark for the partition
      *
      * @param pageView the page view event
      */
     public void processPageView(PageViewEvent pageView) {
         log.debug("Processing page view: {}", pageView.getEventId());
 
-        watermarkTracker.updateWatermark(pageView.getPartition(), pageView.getEventTime());
-        updateGlobalMaxEventTime(pageView.getEventTime());
-
         if (watermarkTracker.isTooLate(pageView.getPartition(), pageView.getEventTime())) {
             log.warn("Dropped late page view: {}", pageView.getEventId());
             return;
         }
 
-        // BUFFER the page view instead of emitting it immediately
-        pendingPageViews.computeIfAbsent(pageView.getPartition(),
-                p -> new PriorityBlockingQueue<>(11, Comparator.comparing(PageViewEvent::getEventTime))
-        ).add(pageView);
+        watermarkTracker.updateWatermark(pageView.getPartition(), pageView.getEventTime());
+        updateGlobalMaxEventTime(pageView.getEventTime());
+
+        pageViewStore.addPageView(pageView);
 
         // Check if this new page view (or any existing ones) are ready to be emitted
         evaluatePendingPageViews(pageView.getPartition());
@@ -162,9 +144,6 @@ public class JoinEngine {
      * Scheduled task to evict old clicks from state.
      * Runs every 30 seconds to prevent unbounded memory growth.
      *
-     * TODO: Implement state eviction logic
-     * - Evict clicks older than the watermark cutoff
-     * - Use clickStore.evictOldClicks() with appropriate cutoff time
      */
     @Scheduled(fixedRate = 30000)
     public void evictOldClicks() {
@@ -180,8 +159,26 @@ public class JoinEngine {
         int evictedCount = clickStore.evictOldClicks(evictionCutoff);
         
 		if (evictedCount > 0) {
-			log.info("Evicted {} old clicks. Current total state size: {}", evictedCount,
-					clickStore.getTotalClickCount());
+			log.info("Evicted {} old clicks. Current total state size: {}", evictedCount, clickStore.getTotalClickCount());
 		}
+    }
+
+    @Scheduled(fixedRate = IDLE_TOPICS_TRACKER, timeUnit = TimeUnit.SECONDS)
+    protected void flushIdlePartitions() {
+        Instant now = Instant.now();
+		log.info("Flush indle messages at: {}", now);
+        Duration idleThreshold = watermarkTracker.getAllowedLateness().plusSeconds(IDLE_TOPICS_TRACKER);
+
+        for (Integer partition : pageViewStore.getAllPartitions()) {
+            Instant lastActive = watermarkTracker.getWatermark(partition);
+
+            if (Duration.between(lastActive, now).compareTo(idleThreshold) > 0) {
+                log.debug("Partition {} is idle. Forcing watermark advancement.", partition);
+                
+                watermarkTracker.updateWatermark(partition, now);
+                
+                evaluatePendingPageViews(partition); 
+            }
+        }
     }
 }

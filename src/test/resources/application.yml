@@ -1,15 +1,18 @@
-# Kafka Configuration
-kafka:
-  bootstrap-servers: kafka:9092
-  topics:
-    page-views: page_views_test
-    ad-clicks: ad_clicks_test
-  consumer:
-    group-id: stream-processor-group_test
-
 watermark:
   allowed-lateness-minutes: 15
 
 output:
   database:
     path: ./output/attributed_page_views_test.db
+
+logging:
+  level:
+    root: DEBUG
+    com.kokhrimenko.tesla.model_s: DEBUG
+    org.springframework.kafka: INFO
+    org.apache.kafka: WARN
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+  file:
+    name: ./logs/stream-processor.log
