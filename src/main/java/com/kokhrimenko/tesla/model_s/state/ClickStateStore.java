@@ -2,7 +2,7 @@ package com.kokhrimenko.tesla.model_s.state;
 
 import java.time.Instant;
 
-import org.springframework.stereotype.Component;
+import org.springframework.stereotype.Repository;
 
 import com.kokhrimenko.tesla.model_s.model.AdClickEvent;
 
@@ -13,7 +13,7 @@ import com.kokhrimenko.tesla.model_s.model.AdClickEvent;
  * Implements state eviction to prevent unbounded memory growth.
  *
  */
-@Component
+@Repository
 public interface ClickStateStore {    
     /**
      * Add a click event to the state store.

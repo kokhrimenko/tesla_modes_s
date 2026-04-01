@@ -70,6 +70,17 @@ services:
     networks:
       - challenge-network
 
+  redis:
+    image: redis:7-alpine
+    container_name: redis-store
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - ./data:/data
+    networks:
+      - challenge-network
+
 networks:
   challenge-network:
     driver: bridge
