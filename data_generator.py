@@ -147,15 +147,6 @@ def generate_test_data():
         'event_id': 'pv_6',
         'processing_time': base_time + timedelta(minutes=80, seconds=1)
     })
-    
-    # User 7: Dummy user to trigger full processing
-    page_views.append({
-        'user_id': 'user_7',
-        'event_time': (base_time + timedelta(minutes=100)).isoformat(),
-        'url': 'https://example.com/dummy_to_test_processing',
-        'event_id': 'pv_7',
-        'processing_time': base_time + timedelta(minutes=100, seconds=1)
-    })
 
     return page_views, ad_clicks
 
@@ -232,7 +223,6 @@ def main():
     print("  - pv_4 (user_4): Should NOT attribute - click too old (>30 min)")
     print("  - pv_5 (user_5): Depends on lateness handling - click may be dropped")
     print("  - pv_6 (user_6): Should NOT attribute - no click exists")
-    print("  - pv_7 (user_7): Dummy user to trigger full processing")
     print("=" * 80)
 
 

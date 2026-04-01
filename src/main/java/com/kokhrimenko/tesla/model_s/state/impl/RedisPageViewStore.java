@@ -1,11 +1,15 @@
 package com.kokhrimenko.tesla.model_s.state.impl;
 
 import java.util.AbstractQueue;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Queue;
 import java.util.Set;
 
 import org.springframework.context.annotation.Profile;
+import org.springframework.data.redis.connection.RedisConnection;
+import org.springframework.data.redis.core.Cursor;
+import org.springframework.data.redis.core.ScanOptions;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ZSetOperations.TypedTuple;
 import org.springframework.stereotype.Repository;
@@ -103,5 +107,30 @@ public class RedisPageViewStore implements PageViewStore {
 				throw new RuntimeException(e);
 			}
 		}
+	}
+
+	@Override
+	public Set<Integer> getAllPartitions() {
+		return redisTemplate.execute((RedisConnection connection) -> {
+	        Set<Integer> keys = new HashSet<>();
+	        
+	        ScanOptions options = ScanOptions.scanOptions()
+	                .match(KEY_PREFIX + "*")
+	                .count(100)
+	                .build();
+
+			try (Cursor<byte[]> cursor = connection.keyCommands().scan(options)) {
+				while (cursor.hasNext()) {
+					String fullKey = new String(cursor.next());
+					String partitionStr = fullKey.substring(KEY_PREFIX.length());
+					keys.add(Integer.parseInt(partitionStr));
+				}
+			} catch (Exception e) {
+				log.error("Failed to scan for buffer keys", e);
+				throw new RuntimeException("Redis scan failed", e);
+			}
+	        
+	        return keys;
+	    });
 	}
 }

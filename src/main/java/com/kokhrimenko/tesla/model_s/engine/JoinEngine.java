@@ -3,6 +3,7 @@ package com.kokhrimenko.tesla.model_s.engine;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Queue;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.springframework.scheduling.annotation.Scheduled;
@@ -160,5 +161,24 @@ public class JoinEngine {
 		if (evictedCount > 0) {
 			log.info("Evicted {} old clicks. Current total state size: {}", evictedCount, clickStore.getTotalClickCount());
 		}
+    }
+
+    @Scheduled(fixedRate = IDLE_TOPICS_TRACKER, timeUnit = TimeUnit.SECONDS)
+    protected void flushIdlePartitions() {
+        Instant now = Instant.now();
+		log.info("Flush indle messages at: {}", now);
+        Duration idleThreshold = watermarkTracker.getAllowedLateness().plusSeconds(IDLE_TOPICS_TRACKER);
+
+        for (Integer partition : pageViewStore.getAllPartitions()) {
+            Instant lastActive = watermarkTracker.getWatermark(partition);
+
+            if (Duration.between(lastActive, now).compareTo(idleThreshold) > 0) {
+                log.debug("Partition {} is idle. Forcing watermark advancement.", partition);
+                
+                watermarkTracker.updateWatermark(partition, now);
+                
+                evaluatePendingPageViews(partition); 
+            }
+        }
     }
 }

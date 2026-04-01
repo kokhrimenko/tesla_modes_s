@@ -2,6 +2,7 @@ package com.kokhrimenko.tesla.model_s.state.impl;
 
 import java.util.Comparator;
 import java.util.Queue;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.PriorityBlockingQueue;
 
@@ -30,5 +31,10 @@ public class InMemoryPageViewStore implements PageViewStore {
 				.computeIfAbsent(pageViewEvent.getPartition(),
 						page -> new PriorityBlockingQueue<>(11, Comparator.comparing(PageViewEvent::getEventTime)))
 				.add(pageViewEvent);
+	}
+
+	@Override
+	public Set<Integer> getAllPartitions() {
+		return pendingPageViews.keySet();
 	}
 }

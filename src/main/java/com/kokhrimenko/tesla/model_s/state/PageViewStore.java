@@ -1,6 +1,7 @@
 package com.kokhrimenko.tesla.model_s.state;
 
 import java.util.Queue;
+import java.util.Set;
 
 import org.springframework.stereotype.Repository;
 
@@ -19,4 +20,6 @@ public interface PageViewStore {
 	Queue<PageViewEvent> getByPartition(int partition);
 	
 	void addPageView(PageViewEvent pageViewEvent);
+
+	Set<Integer> getAllPartitions();
 }
